@@ -23,6 +23,8 @@ package crypto11
 
 import (
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/rsa"
 	"crypto/x509"
 	"github.com/miekg/pkcs11"
 	"github.com/pkg/errors"
@@ -610,4 +612,50 @@ func (c *Context) GetPubAttribute(key interface{}, attribute AttributeType) (a *
 	}
 
 	return set[attribute], nil
+}
+
+// ImportKeys imports externally create keys with selected ID and label.
+//
+// At least one of id and label must be specified.
+func (c *Context) ImportKeys(key crypto.PrivateKey, id []byte, label []byte) (Signer, error) {
+	if c.closed.Get() {
+		return nil, errClosed
+	}
+
+	if id == nil && label == nil {
+		return nil, errors.New("id and label cannot both be nil")
+	}
+
+	attributes := NewAttributeSet()
+
+	if id != nil {
+		if err := attributes.Set(CkaId, id); err != nil {
+			return nil, err
+		}
+	}
+	if label != nil {
+		if err := attributes.Set(CkaLabel, label); err != nil {
+			return nil, err
+		}
+	}
+
+	return c.ImportKeysWithAttributes(key, attributes)
+}
+
+// ImportKeysWithAttributes imports externally create keys with selected attributes.
+func (c *Context) ImportKeysWithAttributes(key crypto.PrivateKey, attributes AttributeSet) (Signer, error) {
+	if c.closed.Get() {
+		return nil, errClosed
+	}
+
+	switch key := key.(type) {
+	case *rsa.PrivateKey:
+		return c.importRSAKeyWithAttributes(key, attributes)
+
+	case *ecdsa.PrivateKey:
+		return c.importECDSAKeyWithAttributes(key, attributes)
+
+	default:
+		return nil, errors.Errorf("import of %T key is not supported", key)
+	}
 }

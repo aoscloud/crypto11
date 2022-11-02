@@ -150,3 +150,32 @@ func TestEcdsaRequiredArgs(t *testing.T) {
 	_, err = ctx.GenerateECDSAKeyPairWithLabel(val, nil, elliptic.P224())
 	require.Error(t, err)
 }
+
+func TestImportECDSA(t *testing.T) {
+	ctx, err := ConfigureFromFile("config")
+	require.NoError(t, err)
+
+	defer func() {
+		err = ctx.Close()
+		require.NoError(t, err)
+	}()
+
+	for _, curve := range curves {
+		key, err := ecdsa.GenerateKey(curve, rand.Reader)
+		if err != nil {
+			t.Errorf("crypto.ecdsa.GenerateKey: %v", err)
+			return
+		}
+
+		importedKey, err := ctx.importECDSAKeyWithAttributes(key, nil)
+		require.NoError(t, err)
+		require.NotNil(t, importedKey)
+		defer func(k Signer) { _ = k.Delete() }(importedKey)
+
+		testEcdsaSigning(t, key, crypto.SHA1, curve.Params().Name, "SHA-1")
+		testEcdsaSigning(t, key, crypto.SHA224, curve.Params().Name, "SHA-224")
+		testEcdsaSigning(t, key, crypto.SHA256, curve.Params().Name, "SHA-256")
+		testEcdsaSigning(t, key, crypto.SHA384, curve.Params().Name, "SHA-384")
+		testEcdsaSigning(t, key, crypto.SHA512, curve.Params().Name, "SHA-512")
+	}
+}
