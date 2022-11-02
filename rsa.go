@@ -37,6 +37,9 @@ import (
 // 32 bits, or less than 2.
 var errMalformedRSAPublicKey = errors.New("malformed RSA public key")
 
+// errMalformedRSAPrivateKey is returned when an RSA private key is not in a suitable form.
+var errMalformedRSAPrivateKey = errors.New("malformed RSA private key")
+
 // errUnsupportedRSAOptions is returned when an unsupported RSA option is requested.
 //
 // Currently this means a nontrivial SessionKeyLen when decrypting; or
@@ -322,4 +325,77 @@ func (priv *pkcs11PrivateKeyRSA) Sign(rand io.Reader, digest []byte, opts crypto
 	}
 
 	return signature, err
+}
+
+// importRSAKeyWithAttributes imports externally create RSA private and public keys.
+func (c *Context) importRSAKeyWithAttributes(key *rsa.PrivateKey, attributes AttributeSet) (SignerDecrypter, error) {
+	if c.closed.Get() {
+		return nil, errClosed
+	}
+
+	if len(key.Primes) < 2 {
+		return nil, errMalformedRSAPrivateKey
+	}
+
+	publicAttributes := attributes.Copy()
+	privateAttributes := attributes.Copy()
+
+	var k SignerDecrypter
+
+	err := c.withSession(func(session *pkcs11Session) error {
+		publicAttributes.AddIfNotPresent([]*pkcs11.Attribute{
+			pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PUBLIC_KEY),
+			pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_RSA),
+			pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
+			pkcs11.NewAttribute(pkcs11.CKA_VERIFY, true),
+			pkcs11.NewAttribute(pkcs11.CKA_ENCRYPT, true),
+			pkcs11.NewAttribute(pkcs11.CKA_MODULUS, key.PublicKey.N.Bytes()),
+			pkcs11.NewAttribute(pkcs11.CKA_PUBLIC_EXPONENT, big.NewInt(int64(key.PublicKey.E)).Bytes()),
+		})
+		privateAttributes.AddIfNotPresent([]*pkcs11.Attribute{
+			pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),
+			pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_RSA),
+			pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
+			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
+			pkcs11.NewAttribute(pkcs11.CKA_DECRYPT, true),
+			pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
+			pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
+			pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, false),
+			pkcs11.NewAttribute(pkcs11.CKA_MODULUS, key.N.Bytes()),
+			pkcs11.NewAttribute(pkcs11.CKA_PUBLIC_EXPONENT, big.NewInt(int64(key.E)).Bytes()),
+			pkcs11.NewAttribute(pkcs11.CKA_PRIVATE_EXPONENT, key.D.Bytes()),
+			pkcs11.NewAttribute(pkcs11.CKA_PRIME_1, key.Primes[0].Bytes()),
+			pkcs11.NewAttribute(pkcs11.CKA_PRIME_2, key.Primes[1].Bytes()),
+		})
+		if key.Precomputed.Dp != nil {
+			privateAttributes.AddIfNotPresent([]*pkcs11.Attribute{
+				pkcs11.NewAttribute(pkcs11.CKA_EXPONENT_1, key.Precomputed.Dp.Bytes()),
+				pkcs11.NewAttribute(pkcs11.CKA_EXPONENT_2, key.Precomputed.Dq.Bytes()),
+				pkcs11.NewAttribute(pkcs11.CKA_COEFFICIENT, key.Precomputed.Qinv.Bytes()),
+			})
+		}
+
+		pubHandle, err := session.ctx.CreateObject(session.handle, publicAttributes.ToSlice())
+		if err != nil {
+			return err
+		}
+
+		privHandle, err := session.ctx.CreateObject(session.handle, privateAttributes.ToSlice())
+		if err != nil {
+			return err
+		}
+
+		k = &pkcs11PrivateKeyRSA{
+			pkcs11PrivateKey: pkcs11PrivateKey{
+				pkcs11Object: pkcs11Object{
+					handle:  privHandle,
+					context: c,
+				},
+				pubKeyHandle: pubHandle,
+				pubKey:       key.Public(),
+			},
+		}
+		return nil
+	})
+	return k, err
 }

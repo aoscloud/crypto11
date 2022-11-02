@@ -262,3 +262,23 @@ func TestRsaRequiredArgs(t *testing.T) {
 	_, err = ctx.GenerateRSAKeyPairWithLabel(val, nil, 2048)
 	require.Error(t, err)
 }
+
+func TestImportRSA(t *testing.T) {
+	ctx, err := ConfigureFromFile("config")
+	require.NoError(t, err)
+
+	defer func() {
+		require.NoError(t, ctx.Close())
+	}()
+
+	key, err := rsa.GenerateKey(rand.Reader, rsaSize)
+	require.NoError(t, err)
+
+	importedKey, err := ctx.importRSAKeyWithAttributes(key, nil)
+	require.NoError(t, err)
+	require.NotNil(t, key)
+	defer func() { _ = importedKey.Delete() }()
+
+	t.Run("Sign", func(t *testing.T) { testRsaSigning(t, importedKey, false) })
+	t.Run("Encrypt", func(t *testing.T) { testRsaEncryption(t, importedKey, false) })
+}

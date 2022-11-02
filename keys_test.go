@@ -1,6 +1,8 @@
 package crypto11
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"testing"
@@ -219,5 +221,39 @@ func TestGettingUnsupportedKeyTypeAttributes(t *testing.T) {
 
 		_, err = ctx.GetAttributes(key, []AttributeType{CkaModulusBits})
 		require.Error(t, err)
+	})
+}
+
+func TestImportKeys(t *testing.T) {
+	withContext(t, func(ctx *Context) {
+		ecLabel := randomBytes()
+		ecID := randomBytes()
+
+		ecKey, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+		require.NoError(t, err)
+
+		importedKey, err := ctx.ImportKeys(ecKey, ecID, ecLabel)
+		require.NoError(t, err)
+		require.NotNil(t, importedKey)
+		defer func(k Signer) { _ = k.Delete() }(importedKey)
+
+		rsaLabel := randomBytes()
+		rsaID := randomBytes()
+
+		rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+
+		importedKey, err = ctx.ImportKeys(rsaKey, rsaID, rsaLabel)
+		require.NoError(t, err)
+		require.NotNil(t, importedKey)
+		defer func(k Signer) { _ = k.Delete() }(importedKey)
+
+		keys, err := ctx.FindKeyPairs(ecID, ecLabel)
+		require.NoError(t, err)
+		require.Len(t, keys, 1)
+
+		keys, err = ctx.FindKeyPairs(rsaID, rsaLabel)
+		require.NoError(t, err)
+		require.Len(t, keys, 1)
 	})
 }

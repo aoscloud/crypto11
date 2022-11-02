@@ -158,6 +158,10 @@ func unmarshalEcParams(b []byte) (elliptic.Curve, error) {
 	return nil, errUnsupportedEllipticCurve
 }
 
+func marshalEcPoint(x, y *big.Int, c elliptic.Curve) ([]byte, error) {
+	return asn1.Marshal(elliptic.Marshal(c, x, y))
+}
+
 func unmarshalEcPoint(b []byte, c elliptic.Curve) (*big.Int, *big.Int, error) {
 	var pointBytes []byte
 	extra, err := asn1.Unmarshal(b, &pointBytes)
@@ -299,4 +303,69 @@ func (c *Context) GenerateECDSAKeyPairWithAttributes(public, private AttributeSe
 // The return value is a DER-encoded byteblock.
 func (signer *pkcs11PrivateKeyECDSA) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 	return signer.context.dsaGeneric(signer.handle, pkcs11.CKM_ECDSA, digest)
+}
+
+// importECDSAKeyWithAttributes imports externally create ECDSA private and public keys.
+func (c *Context) importECDSAKeyWithAttributes(key *ecdsa.PrivateKey, attributes AttributeSet) (Signer, error) {
+	if c.closed.Get() {
+		return nil, errClosed
+	}
+
+	publicAttributes := attributes.Copy()
+	privateAttributes := attributes.Copy()
+
+	var k Signer
+
+	err := c.withSession(func(session *pkcs11Session) error {
+		parameters, err := marshalEcParams(key.Curve)
+		if err != nil {
+			return err
+		}
+		point, err := marshalEcPoint(key.X, key.Y, key.Curve)
+		if err != nil {
+			return err
+		}
+		publicAttributes.AddIfNotPresent([]*pkcs11.Attribute{
+			pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PUBLIC_KEY),
+			pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_ECDSA),
+			pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
+			pkcs11.NewAttribute(pkcs11.CKA_VERIFY, true),
+			pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, parameters),
+			pkcs11.NewAttribute(pkcs11.CKA_EC_POINT, point),
+		})
+		privateAttributes.AddIfNotPresent([]*pkcs11.Attribute{
+			pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),
+			pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_ECDSA),
+			pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
+			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
+			pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
+			pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
+			pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, false),
+			pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, parameters),
+			pkcs11.NewAttribute(pkcs11.CKA_VALUE, key.D.Bytes()),
+		})
+
+		pubHandle, err := session.ctx.CreateObject(session.handle, publicAttributes.ToSlice())
+		if err != nil {
+			return err
+		}
+
+		privHandle, err := session.ctx.CreateObject(session.handle, privateAttributes.ToSlice())
+		if err != nil {
+			return err
+		}
+
+		k = &pkcs11PrivateKeyECDSA{
+			pkcs11PrivateKey: pkcs11PrivateKey{
+				pkcs11Object: pkcs11Object{
+					handle:  privHandle,
+					context: c,
+				},
+				pubKeyHandle: pubHandle,
+				pubKey:       key.Public(),
+			},
+		}
+		return nil
+	})
+	return k, err
 }
